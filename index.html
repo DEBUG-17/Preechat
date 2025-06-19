@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ChatConnect - Video Chat</title>
+    <link href="https://fonts.googleapis.com/css2?family=Material+Icons" rel="stylesheet" />
+    <style>
+        body {
+            margin: 0;
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            background-color: #f5f7fa;
+        }
+        header {
+            background-color: #a3c1da;
+            padding: 10px;
+            text-align: center;
+        }
+        #startChat, #skipChat {
+            margin: 20px 10px 20px 0;
+            padding: 10px 20px;
+            font-size: 20px;
+        }
+        #videos {
+            display: flex;
+            justify-content: center;
+            margin: 20px;
+            opacity: 0;
+            transform: translateY(30px);
+            transition: opacity 0.6s, transform 0.6s;
+        }
+        #videos.visible {
+            opacity: 1;
+            transform: translateY(0);
+        }
+        video {
+            width: 45%;
+            height: auto;
+            background-color: black;
+        }
+        #chatControls {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            opacity: 0;
+            transform: translateY(30px);
+            transition: opacity 0.6s, transform 0.6s;
+        }
+        #chatControls.visible {
+            opacity: 1;
+            transform: translateY(0);
+        }
+        #chatMessages {
+            width: 90%;
+            height: 150px;
+            overflow-y: auto;
+            border: 1px solid #ccc;
+            margin: 10px 0;
+        }
+        #messageInput {
+            width: 70%;
+            padding: 10px;
+        }
+        #sendMessageBtn {
+            padding: 10px 20px;
+        }
+        .hidden {
+            display: none;
+        }
+        #buttonRow {
+            display: flex;
+            justify-content: center;
+        }
+        /* Chat message animation */
+        .chat-message {
+            opacity: 0;
+            transform: translateX(-40px);
+            animation: slideIn 0.4s forwards;
+        }
+        @keyframes slideIn {
+            to {
+                opacity: 1;
+                transform: translateX(0);
+            }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Pree chat</h1>
+    </header>
+    <main>
+        <div id="buttonRow">
+            <button id="startChat">Start Chat</button>
+            <button id="skipChat" class="hidden">Skip</button>
+        </div>
+        <div id="videos" class="hidden">
+            <video id="userVideo" autoplay muted></video>
+            <video id="strangerVideo" autoplay></video>
+        </div>
+        <div id="chatControls" class="hidden">
+            <div id="chatMessages"></div>
+            <input type="text" id="messageInput" placeholder="Type a message..." />
+            <button id="sendMessageBtn">Send</button>
+        </div>
+    </main>
+    <script>
+        const startChatBtn = document.getElementById('startChat');
+        const skipChatBtn = document.getElementById('skipChat');
+        const userVideo = document.getElementById('userVideo');
+        const strangerVideo = document.getElementById('strangerVideo');
+        const chatMessages = document.getElementById('chatMessages');
+        const messageInput = document.getElementById('messageInput');
+        const sendMessageBtn = document.getElementById('sendMessageBtn');
+
+        let localStream;
+        let peerConnection;
+        let ws;
+        const signalingServerUrl = 'ws://localhost:3000'; // Update if needed
+        const config = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+
+        function addChatMessage(sender, text) {
+            const message = document.createElement('div');
+            message.textContent = `${sender}: ${text}`;
+            message.classList.add('chat-message');
+            chatMessages.appendChild(message);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+
+        async function startLocalStream() {
+            localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+            userVideo.srcObject = localStream;
+        }
+
+        async function startChat() {
+            await startLocalStream();
+            ws = new WebSocket(signalingServerUrl);
+
+            ws.onopen = () => {
+                console.log('Connected to signaling server');
+            };
+
+            ws.onmessage = async (message) => {
+                const data = JSON.parse(message.data);
+                if (data.type === 'matched') {
+                    // Handle matched event
+                    if (data.initiator) {
+                        peerConnection = new RTCPeerConnection(config);
+                        localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+                        peerConnection.onicecandidate = (event) => {
+                            if (event.candidate) {
+                                ws.send(JSON.stringify({ type: 'signal', data: { candidate: event.candidate } }));
+                            }
+                        };
+                        peerConnection.ontrack = (event) => {
+                            strangerVideo.srcObject = event.streams[0];
+                        };
+                        const offer = await peerConnection.createOffer();
+                        await peerConnection.setLocalDescription(offer);
+                        ws.send(JSON.stringify({ type: 'signal', data: { offer } }));
+                    } else {
+                        peerConnection = new RTCPeerConnection(config);
+                        peerConnection.onicecandidate = (event) => {
+                            if (event.candidate) {
+                                ws.send(JSON.stringify({ type: 'signal', data: { candidate: event.candidate } }));
+                            }
+                        };
+                        peerConnection.ontrack = (event) => {
+                            strangerVideo.srcObject = event.streams[0];
+                        }
+                    }
+                } else if (data.type === 'signal') {
+                    if (data.data.offer) {
+                        await peerConnection.setRemoteDescription(new RTCSessionDescription(data.data.offer));
+                        const answer = await peerConnection.createAnswer();
+                        await peerConnection.setLocalDescription(answer);
+                        ws.send(JSON.stringify({ type: 'signal', data: { answer } }));
+                    } else if (data.data.answer) {
+                        await peerConnection.setRemoteDescription(new RTCSessionDescription(data.data.answer));
+                    } else if (data.data.candidate) {
+                        await peerConnection.addIceCandidate(new RTCIceCandidate(data.data.candidate));
+                    }
+                }
+            };
+
+            startChatBtn.classList.add('hidden');
+            skipChatBtn.classList.remove('hidden');
+            const videosDiv = document.getElementById('videos');
+            const chatControlsDiv = document.getElementById('chatControls');
+            videosDiv.classList.remove('hidden');
+            chatControlsDiv.classList.remove('hidden');
+            // Add animation classes
+            setTimeout(() => {
+                videosDiv.classList.add('visible');
+                chatControlsDiv.classList.add('visible');
+            }, 10);
+        }
+
+        async function skipChat() {
+            // Close current connection and streams
+            if (peerConnection) {
+                peerConnection.close();
+                peerConnection = null;
+            }
+            if (ws) {
+                ws.close();
+                ws = null;
+            }
+            strangerVideo.srcObject = null;
+            chatMessages.innerHTML = '';
+            // Optionally, you can also stop localStream tracks if you want to re-request them
+            // localStream.getTracks().forEach(track => track.stop());
+
+            // Start a new chat
+            await startChat();
+        }
+
+        startChatBtn.addEventListener('click', startChat);
+        skipChatBtn.addEventListener('click', skipChat);
+        sendMessageBtn.addEventListener('click', () => {
+            const message = messageInput.value;
+            if (message.trim() !== '') {
+                addChatMessage('You', message);
+                messageInput.value = '';
+            }
+        });
+    </script>
+</body>
+</html>
